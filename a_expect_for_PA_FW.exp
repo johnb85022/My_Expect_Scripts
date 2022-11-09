@@ -1,0 +1,220 @@
+#!/usr/bin/expect
+# Re work for reading in a step file.
+# got really lazy, all one proc now.
+exp_internal 0
+log_user 0
+if { $argc < 2 } {
+    puts "----------------------------------------------\n"
+    puts "Use: hostname AutoCmd.cmd file.\n"
+    puts "AutoCmd.cmd is just a file that has the PA commands."
+    puts "Debug your commands: the commands are tested by U!"
+    puts "Remember: Keep it safe."
+   puts "----------------------------------------------\n"
+close
+wait
+exit
+}
+# Set up command line.
+# Change the names to protect the ,,,well whom ever.
+set x "[lindex $argv 0 ]"
+set y "[lindex $argv 1 ]"
+
+# Open these vars if ya needa some logs.
+set systemTime [clock seconds]
+set    myuuid [clock format $systemTime -format %a ]
+log_file history/$myuuid.pa.log
+send_log "Host $x ... Cmds $y\n"
+puts  "Host $x ... Steps $y"
+
+if { [ file exists $y ] } {
+ puts "Ok $y."
+} else {
+  puts "Sorry I did not see the cmd file?\n"
+  close
+  wait
+  exit
+}
+
+# Make sure we have a file we can open .
+if [catch {open "$y"} input] {
+ puts "$input"
+ puts "Did not open cmd file.\n"
+ close
+ wait
+ exit
+}
+
+# Open these vars if ya needa some logs.
+# send_log "Host $x ... Steps $y"
+puts  "Host $x ... Cmds $y\n"
+
+# See if the host is around today. Alt one/zero patten helps the frame-relay
+# wake up.
+if [ catch { exec ping -c1 -s32 -paf $x } PING_ERROR ] {
+puts "Error: $x Does not ping, :: $PING_ERROR ::\n"
+close
+wait
+exit
+}
+
+# Help the flow some.
+set send_slow {1 .1}
+# my user is defined as a ro account
+set my_user "admin"
+
+#if [ catch { set my_user $env(IUSER) } ENV_ERROR ] {
+#   puts "ERROR: my_user env IUSER did not return a value from the ENV.\n"
+#   close
+#   wait
+#  exit
+# }
+
+if [ catch { set my_pass $env(IPASS) } ENV_ERROR ] {
+   puts "ERROR: my_pass env IPASS did not return a value from the ENV.\n"
+   close
+   wait
+   exit
+ }
+
+# Handle errors in a nice fashion.
+if { [ string length $my_user ] == 0 } {
+   puts "No User String? Ref: 'env IUSER' \n"
+   close
+   wait
+   exit
+ }
+
+if { [ string length $my_pass ] == 0 } {
+puts "No User String? Ref: 'env IPASS' \n"
+   close
+   wait
+   exit
+ }
+
+# The Expect default, for example.
+# set prompt "(%|#|\\$) $"          ;# default prompt
+set prompt "(\\>) $"          ;# default prompt
+set my_prompt "> "
+# Where is your ssh ?
+set sshbin "/bin/ssh"
+
+# Start ssh, IP4, Proto 2, Compress, Login.
+if [ catch { spawn $sshbin -2 -4 -C -l $my_user $x } SSH_ERROR ] {
+puts "Error: $x SSH DISCON :: $SSH_ERROR ::\n"
+close
+wait
+exit
+}
+
+# Do what we can to catch common errors.
+expect {
+"port 22: Connection refused" {
+ puts "No SSH on $x\n"
+ close
+ wait
+ exit
+}
+}
+
+# Accpet the host ID key.
+#expect {
+#"Are you sure you want to continue connecting" {
+#send "yes\n"
+#exp_continue
+#} "\[pP]assword:" {
+#       send "$my_pass\n";
+#       send "\n\n"
+#}
+#}
+
+# Ask for pass and send it, 2 cr for prompt
+expect {
+"\[pP]assword:" {
+        send "$my_pass\n";
+        send "\n"
+}
+}
+
+# What is bad pass message
+expect {
+"Permission denied, please try again." {
+puts "Bad SSH Pass, $my_user $x ...Exiting\n"
+close
+wait
+exit
+}
+}
+
+# The user should be loged in now.
+# The first prompt is critical, the banner and other login messages should have
+# passed over now. Thus the first prompt is critical to know that we have logged in.
+# Vas ist da prompt?  See comments on the regex for the prompt, expect default prompt und so on.
+######################
+expect {
+-re "$my_prompt" {
+send "set cli pager off\n"
+} timeout {
+puts "Opps, Missed User Shell Prompt $x\n"
+close
+wait
+exit
+}
+}
+
+# OPEN ich bin ya. Send info to the stout of the calling shell.
+log_user 1
+#########################################
+# Start The Steping Loop Here. Loop over the file line for line that we open early in the expect.
+# CUP_O_JOE, massive debug when value is set to 1.
+exp_internal 0
+# set a longer timeout for the looping. Found 360 works well. If the command id really long, then
+set timeout 60
+
+foreach line [split [read $input] "\n"] {
+## DEBUG puts " Sending $line"
+# Wait for prompt, then send a line from the file.
+# Know This: A command is the distance from prompt to next prompt.
+#
+expect {
+"$my_prompt" {
+    ## DEBUG puts "LINE $line\n"
+    send -- "$line\n"
+    } timeout {
+    puts "Opps! I may missed the Prompt while issueing Cmd Exiting\n"
+    puts "Command was $line, on host $x\n"
+    close
+    wait
+    exit
+    }
+    }
+# End of the forech line split read input \n, loop.
+}
+
+# Set it back to a lower value. Try to keep from hangeing around for days.
+set timeout 30
+# Done File Looping.
+#########################################
+
+# Wait for the far side buffers.
+sleep 2
+#################################
+expect {
+"$my_prompt" {
+    send "\nexit\n"
+    } timeout {
+    puts "Opps I may have missed the prompt while issueing exit command Exiting\n"
+    close
+    wait
+    exit
+}
+}
+# Ende.
+
+# Ref did this to protect passwords , the expect is called from a go.sh script. 
+# export IPASS=$(ansible-vault view --vault-password-file ./pa-pass pa.vault);
+# example of a command in a cmd file
+# request license info
+# show system info
+# request system external-list show type predefined-ip name foobar-bulletproof-ip-list
+# Taste great so less filling. JB
+
